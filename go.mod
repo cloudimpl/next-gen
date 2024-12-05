@@ -1,4 +1,4 @@
-module github.com/cloudimpl/next-coder/generator
+module github.com/cloudimpl/next-gen
 
 go 1.22.0
 

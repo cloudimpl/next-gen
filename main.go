@@ -2,7 +2,7 @@ package main
 
 import (
 	"flag"
-	"github.com/cloudimpl/next-coder/generator/lib"
+	"github.com/cloudimpl/next-gen/lib"
 	"github.com/fsnotify/fsnotify"
 	"log"
 	"os"
