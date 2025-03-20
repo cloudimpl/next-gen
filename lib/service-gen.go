@@ -19,6 +19,8 @@ type MethodInfo struct {
 	OriginalName string
 	Name         string
 	InputType    string
+	InputSchema  map[string]interface{}
+	OutputSchema map[string]interface{}
 	IsWorkflow   bool
 	IsService    bool
 	IsPointer    bool // Whether the input type is a pointer
