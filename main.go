@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"github.com/cloudimpl/next-gen/lib"
 	"github.com/fsnotify/fsnotify"
 	"log"
@@ -86,11 +87,13 @@ func watch(appPath string, onChange func()) {
 	<-done
 }
 
-func generate(appPath string) {
+func generate(appPath string) error {
 	err := lib.GenerateServices(appPath, true)
 	if err != nil {
-		log.Fatalf("Error generating services: %s\n", err.Error())
+		return fmt.Errorf("Error generating services: %s\n", err.Error())
 	}
+
+	return nil
 }
 
 func watchAndGenerate(appPath string) {
@@ -103,9 +106,9 @@ func watchAndGenerate(appPath string) {
 	log.Printf("Starting watcher on: %s", servicesPath)
 
 	watch(servicesPath, func() {
-		err := lib.GenerateServices(appPath, true)
+		err := generate(appPath)
 		if err != nil {
-			log.Printf("Error generating services: %v", err)
+			log.Println(err.Error())
 		}
 	})
 }
@@ -151,6 +154,9 @@ func main() {
 	if *watch {
 		watchAndGenerate(appPath)
 	} else {
-		generate(appPath)
+		err := generate(appPath)
+		if err != nil {
+			log.Fatalf(err.Error())
+		}
 	}
 }
