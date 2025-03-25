@@ -7,8 +7,6 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"gopkg.in/yaml.v3"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,30 +16,23 @@ import (
 )
 
 type MethodInfo struct {
-	OriginalName    string  `yaml:"originalName"`
-	Name            string  `yaml:"name"`
-	InputType       string  `yaml:"inputType"`
-	IsInputPointer  bool    `yaml:"isInputPointer"` // Whether the input type is a pointer
-	InputSchema     []Field `yaml:"inputSchema"`
-	OutputType      string  `yaml:"outputType"`
-	IsOutputPointer bool    `yaml:"isOutputPointer"` // Whether the output type is a pointer
-	OutputSchema    []Field `yaml:"outputSchema"`
-	IsWorkflow      bool    `yaml:"isWorkflow"`
-	IsService       bool    `yaml:"isService"`
+	OriginalName string
+	Name         string
+	InputType    string
+	InputSchema  map[string]interface{}
+	OutputSchema map[string]interface{}
+	IsWorkflow   bool
+	IsService    bool
+	IsPointer    bool // Whether the input type is a pointer
 }
 
 type ServiceInfo struct {
-	ModuleName        string       `yaml:"moduleName"`
-	ServiceName       string       `yaml:"serviceName"`
-	ServiceStructName string       `yaml:"serviceStructName"`
-	Methods           []MethodInfo `yaml:"methods"`
-	IsProduction      bool         // New flag to determine if we are in production mode
-	Imports           []string     `yaml:"imports"`
-}
-
-type Field struct {
-	Name string `yaml:"name"`
-	Type string `yaml:"type"`
+	ModuleName        string
+	ServiceName       string
+	ServiceStructName string
+	Methods           []MethodInfo
+	IsProduction      bool // New flag to determine if we are in production mode
+	Imports           []string
 }
 
 const wrapperTemplate = `package _polycode
@@ -98,7 +89,7 @@ func (t *{{.ServiceStructName}}) ExecuteService(ctx polycode.ServiceContext, met
 	{{range .Methods}}{{if .IsService}}case "{{.Name}}":
 		{
 			// Pass the input correctly as a pointer or value based on the method signature
-			{{if .IsInputPointer}}
+			{{if .IsPointer}}
 			return service.{{.OriginalName}}(ctx, input.(*{{.InputType}}))
 			{{else}}
 			return service.{{.OriginalName}}(ctx, *(input.(*{{.InputType}})))
@@ -119,7 +110,7 @@ func (t *{{.ServiceStructName}}) ExecuteWorkflow(ctx polycode.WorkflowContext, m
 	{{range .Methods}}{{if .IsWorkflow}}case "{{.Name}}":
 		{
 			// Pass the input correctly as a pointer or value based on the method signature
-			{{if .IsInputPointer}}
+			{{if .IsPointer}}
 			return service.{{.OriginalName}}(ctx, input.(*{{.InputType}}))
 			{{else}}
 			return service.{{.OriginalName}}(ctx, *(input.(*{{.InputType}})))
@@ -177,46 +168,8 @@ func getModuleName(filePath string) (string, error) {
 	return "", fmt.Errorf("module name not found in go.mod")
 }
 
-func extractStructs(root string) (map[string][]Field, error) {
-	structDefs := make(map[string][]Field)
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") {
-			return err
-		}
-
-		fset := token.NewFileSet()
-		file, err := parser.ParseFile(fset, path, nil, parser.AllErrors)
-		if err != nil {
-			return nil
-		}
-
-		for _, decl := range file.Decls {
-			if g, ok := decl.(*ast.GenDecl); ok && g.Tok == token.TYPE {
-				for _, spec := range g.Specs {
-					if typeSpec, ok := spec.(*ast.TypeSpec); ok {
-						if structType, ok := typeSpec.Type.(*ast.StructType); ok {
-							var fields []Field
-							for _, field := range structType.Fields.List {
-								if len(field.Names) > 0 {
-									fields = append(fields, Field{
-										Name: field.Names[0].Name,
-										Type: fmt.Sprint(field.Type),
-									})
-								}
-							}
-							structDefs[typeSpec.Name.Name] = fields
-						}
-					}
-				}
-			}
-		}
-		return nil
-	})
-	return structDefs, err
-}
-
-func generateService(appPath string, servicePath string, moduleName string, serviceName string, structDefs map[string][]Field, prod bool) error {
-	methods, imports, err := parseDir(servicePath, structDefs)
+func generateService(appPath string, servicePath string, moduleName string, serviceName string, prod bool) error {
+	methods, imports, err := parseDir(servicePath)
 	if err != nil {
 		fmt.Printf("Error parsing directory: %v\n", err)
 		return err
@@ -227,18 +180,7 @@ func generateService(appPath string, servicePath string, moduleName string, serv
 		return nil
 	}
 
-	serviceStructName := toPascalCase(serviceName)
-
-	serviceInfo := ServiceInfo{
-		ModuleName:        moduleName,
-		ServiceName:       serviceName,
-		ServiceStructName: serviceStructName,
-		Methods:           methods,
-		IsProduction:      prod,
-		Imports:           imports,
-	}
-
-	generatedCode, err := generateServiceCode(serviceInfo)
+	generatedCode, err := generateServiceCode(moduleName, serviceName, methods, imports, prod)
 	if err != nil {
 		fmt.Printf("Error generating code: %v\n", err)
 		return err
@@ -256,12 +198,6 @@ func generateService(appPath string, servicePath string, moduleName string, serv
 		return err
 	}
 
-	err = writeServiceDefinition(appPath, serviceName, serviceInfo)
-	if err != nil {
-		fmt.Printf("Error writing service definition: %v\n", err)
-		return err
-	}
-
 	return nil
 }
 
@@ -269,12 +205,6 @@ func GenerateServices(appPath string, prod bool) error {
 	moduleName, err := getModuleName(appPath + "/go.mod")
 	if err != nil {
 		fmt.Printf("Error getting module name: %v\n", err)
-		return err
-	}
-
-	structDefs, err := extractStructs(appPath)
-	if err != nil {
-		fmt.Printf("Error extracting structs: %v\n", err)
 		return err
 	}
 
@@ -296,7 +226,7 @@ func GenerateServices(appPath string, prod bool) error {
 				servicePath := filepath.Join(servicesFolder, entry.Name())
 				println("Generating code for path: ", servicePath)
 				serviceName := entry.Name()
-				err = generateService(appPath, servicePath, moduleName, serviceName, structDefs, prod)
+				err = generateService(appPath, servicePath, moduleName, serviceName, prod)
 				if err != nil {
 					fmt.Printf("Error generating service: %v\n", err)
 					return err
@@ -321,7 +251,7 @@ func GenerateServices(appPath string, prod bool) error {
 	return nil
 }
 
-// ValidateFunctionParams to check for polycode.ServiceContext or polycode.WorkflowContext
+// Modified validateFunctionParams to check for polycode.ServiceContext or polycode.WorkflowContext
 func validateFunctionParams(fn *ast.FuncDecl) (string, error) {
 	// Check if there are at least two parameters (ctx and input)
 	if fn.Type.Params == nil || len(fn.Type.Params.List) < 2 {
@@ -346,7 +276,7 @@ func validateFunctionParams(fn *ast.FuncDecl) (string, error) {
 }
 
 // Updated parseDir function to mark methods as workflow or service
-func parseDir(serviceFolder string, structDefs map[string][]Field) ([]MethodInfo, []string, error) {
+func parseDir(serviceFolder string) ([]MethodInfo, []string, error) {
 	fset := token.NewFileSet()
 
 	var methods []MethodInfo
@@ -387,42 +317,27 @@ func parseDir(serviceFolder string, structDefs map[string][]Field) ([]MethodInfo
 					// Extract the function name and input/output parameters
 					methodName := strings.ToLower(fn.Name.Name) // Normalize to lowercase
 
-					inputType := ""
-					outputType := ""
-					isInputPointer := false
-					isOutputPointer := false
+					paramType := ""
+					isPointer := false
 					// Handle pointer types and normal types
 					if starExpr, ok := fn.Type.Params.List[1].Type.(*ast.StarExpr); ok {
-						isInputPointer = true
+						isPointer = true
 						if selectorExpr, ok := starExpr.X.(*ast.SelectorExpr); ok {
-							inputType = fmt.Sprintf("%s.%s", selectorExpr.X.(*ast.Ident).Name, selectorExpr.Sel.Name)
+							paramType = fmt.Sprintf("%s.%s", selectorExpr.X.(*ast.Ident).Name, selectorExpr.Sel.Name)
 						}
 					} else if selectorExpr, ok := fn.Type.Params.List[1].Type.(*ast.SelectorExpr); ok {
-						inputType = fmt.Sprintf("%s.%s", selectorExpr.X.(*ast.Ident).Name, selectorExpr.Sel.Name)
-					}
-
-					if starExpr, ok := fn.Type.Results.List[0].Type.(*ast.StarExpr); ok {
-						isOutputPointer = true
-						if selectorExpr, ok := starExpr.X.(*ast.SelectorExpr); ok {
-							outputType = fmt.Sprintf("%s.%s", selectorExpr.X.(*ast.Ident).Name, selectorExpr.Sel.Name)
-						}
-					} else if selectorExpr, ok := fn.Type.Results.List[0].Type.(*ast.SelectorExpr); ok {
-						outputType = fmt.Sprintf("%s.%s", selectorExpr.X.(*ast.Ident).Name, selectorExpr.Sel.Name)
+						paramType = fmt.Sprintf("%s.%s", selectorExpr.X.(*ast.Ident).Name, selectorExpr.Sel.Name)
 					}
 
 					// Append the method and its corresponding input type to methods
-					if inputType != "" && outputType != "" {
+					if paramType != "" {
 						methods = append(methods, MethodInfo{
-							OriginalName:    OriginalName,
-							Name:            methodName,
-							InputType:       inputType,
-							IsInputPointer:  isInputPointer, // Track whether the input type is a pointer
-							InputSchema:     structDefs[inputType],
-							OutputType:      outputType,
-							IsOutputPointer: isOutputPointer,
-							OutputSchema:    structDefs[outputType],
-							IsWorkflow:      contextType == "Workflow", // Mark as workflow or service
-							IsService:       contextType == "Service",
+							OriginalName: OriginalName,
+							Name:         methodName,
+							InputType:    paramType,
+							IsPointer:    isPointer,                 // Track whether the input type is a pointer
+							IsWorkflow:   contextType == "Workflow", // Mark as workflow or service
+							IsService:    contextType == "Service",
 						})
 					}
 				}
@@ -468,28 +383,19 @@ func toPascalCase(input string) string {
 	return strings.Join(words, "")
 }
 
-func writeServiceDefinition(appPath string, serviceName string, serviceInfo ServiceInfo) error {
-	outputDir := filepath.Join(appPath, ".polycode/definition")
-	if err := os.MkdirAll(outputDir, os.ModePerm); err != nil {
-		return err
-	}
-
-	ymlData, err := yaml.Marshal(serviceInfo)
-	if err != nil {
-		return err
-	}
-
-	serviceFile := filepath.Join(outputDir, serviceName+".yml")
-	if err := os.WriteFile(serviceFile, ymlData, 0644); err != nil {
-		return err
-	}
-
-	fmt.Printf("Generated definition for: %s\n", serviceFile)
-	return nil
-}
-
 // GenerateService the wrapper code based on the extracted information
-func generateServiceCode(serviceInfo ServiceInfo) (string, error) {
+func generateServiceCode(moduleName string, serviceName string, methods []MethodInfo, imports []string, isProd bool) (string, error) {
+	serviceStructName := toPascalCase(serviceName)
+
+	serviceInfo := ServiceInfo{
+		ModuleName:        moduleName,
+		ServiceName:       serviceName,
+		ServiceStructName: serviceStructName,
+		Methods:           methods,
+		IsProduction:      isProd,
+		Imports:           imports,
+	}
+
 	// Use template to generate the code
 	var buf bytes.Buffer
 	tmpl, err := template.New("wrapper").Parse(wrapperTemplate)
