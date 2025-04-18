@@ -16,14 +16,14 @@ import (
 )
 
 type MethodInfo struct {
-	OriginalName string
-	Name         string
-	InputType    string
-	InputSchema  map[string]interface{}
-	OutputSchema map[string]interface{}
-	IsWorkflow   bool
-	IsService    bool
-	IsPointer    bool // Whether the input type is a pointer
+	OriginalName    string
+	Name            string
+	InputType       string
+	IsInputPointer  bool
+	OutputType      string
+	IsOutputPointer bool
+	IsWorkflow      bool
+	IsService       bool
 }
 
 type ServiceInfo struct {
@@ -71,6 +71,20 @@ func (t *{{.ServiceStructName}}) GetInputType(method string) (any, error) {
 	}
 }
 
+func (t *{{.ServiceStructName}}) GetOutputType(method string) (any, error) {
+	method = strings.ToLower(method)
+	switch method {
+	{{range .Methods}}case "{{.Name}}":
+		{
+			return &{{.OutputType}}{}, nil
+		}
+	{{end}}default:
+		{
+			return nil, errors.New("method not found")
+		}
+	}
+}
+
 // ExecuteService handles methods with polycode.ServiceContext as the first parameter
 func (t *{{.ServiceStructName}}) ExecuteService(ctx polycode.ServiceContext, method string, input any) (any, error) {
 	method = strings.ToLower(method)
@@ -89,7 +103,7 @@ func (t *{{.ServiceStructName}}) ExecuteService(ctx polycode.ServiceContext, met
 	{{range .Methods}}{{if .IsService}}case "{{.Name}}":
 		{
 			// Pass the input correctly as a pointer or value based on the method signature
-			{{if .IsPointer}}
+			{{if .IsInputPointer}}
 			return service.{{.OriginalName}}(ctx, input.(*{{.InputType}}))
 			{{else}}
 			return service.{{.OriginalName}}(ctx, *(input.(*{{.InputType}})))
@@ -110,7 +124,7 @@ func (t *{{.ServiceStructName}}) ExecuteWorkflow(ctx polycode.WorkflowContext, m
 	{{range .Methods}}{{if .IsWorkflow}}case "{{.Name}}":
 		{
 			// Pass the input correctly as a pointer or value based on the method signature
-			{{if .IsPointer}}
+			{{if .IsInputPointer}}
 			return service.{{.OriginalName}}(ctx, input.(*{{.InputType}}))
 			{{else}}
 			return service.{{.OriginalName}}(ctx, *(input.(*{{.InputType}})))
@@ -317,27 +331,43 @@ func parseDir(serviceFolder string) ([]MethodInfo, []string, error) {
 					// Extract the function name and input/output parameters
 					methodName := strings.ToLower(fn.Name.Name) // Normalize to lowercase
 
-					paramType := ""
-					isPointer := false
+					inputType := ""
+					isInputPointer := false
+
 					// Handle pointer types and normal types
 					if starExpr, ok := fn.Type.Params.List[1].Type.(*ast.StarExpr); ok {
-						isPointer = true
+						isInputPointer = true
 						if selectorExpr, ok := starExpr.X.(*ast.SelectorExpr); ok {
-							paramType = fmt.Sprintf("%s.%s", selectorExpr.X.(*ast.Ident).Name, selectorExpr.Sel.Name)
+							inputType = fmt.Sprintf("%s.%s", selectorExpr.X.(*ast.Ident).Name, selectorExpr.Sel.Name)
 						}
 					} else if selectorExpr, ok := fn.Type.Params.List[1].Type.(*ast.SelectorExpr); ok {
-						paramType = fmt.Sprintf("%s.%s", selectorExpr.X.(*ast.Ident).Name, selectorExpr.Sel.Name)
+						inputType = fmt.Sprintf("%s.%s", selectorExpr.X.(*ast.Ident).Name, selectorExpr.Sel.Name)
+					}
+
+					outputType := ""
+					isOutputPointer := false
+
+					// Handle pointer types and normal types
+					if starExpr, ok := fn.Type.Results.List[0].Type.(*ast.StarExpr); ok {
+						isOutputPointer = true
+						if selectorExpr, ok := starExpr.X.(*ast.SelectorExpr); ok {
+							outputType = fmt.Sprintf("%s.%s", selectorExpr.X.(*ast.Ident).Name, selectorExpr.Sel.Name)
+						}
+					} else if selectorExpr, ok := fn.Type.Results.List[0].Type.(*ast.SelectorExpr); ok {
+						outputType = fmt.Sprintf("%s.%s", selectorExpr.X.(*ast.Ident).Name, selectorExpr.Sel.Name)
 					}
 
 					// Append the method and its corresponding input type to methods
-					if paramType != "" {
+					if inputType != "" {
 						methods = append(methods, MethodInfo{
-							OriginalName: OriginalName,
-							Name:         methodName,
-							InputType:    paramType,
-							IsPointer:    isPointer,                 // Track whether the input type is a pointer
-							IsWorkflow:   contextType == "Workflow", // Mark as workflow or service
-							IsService:    contextType == "Service",
+							OriginalName:    OriginalName,
+							Name:            methodName,
+							InputType:       inputType,
+							IsInputPointer:  isInputPointer,
+							OutputType:      outputType,
+							IsOutputPointer: isOutputPointer,
+							IsWorkflow:      contextType == "Workflow",
+							IsService:       contextType == "Service",
 						})
 					}
 				}
