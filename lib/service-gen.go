@@ -16,14 +16,16 @@ import (
 )
 
 type MethodInfo struct {
-	OriginalName    string
-	Name            string
-	InputType       string
-	IsInputPointer  bool
-	OutputType      string
-	IsOutputPointer bool
-	IsWorkflow      bool
-	IsService       bool
+	OriginalName      string
+	Name              string
+	InputType         string
+	IsInputPointer    bool
+	IsInputPrimitive  bool
+	OutputType        string
+	IsOutputPointer   bool
+	IsOutputPrimitive bool
+	IsWorkflow        bool
+	IsService         bool
 }
 
 type ServiceInfo struct {
@@ -72,16 +74,18 @@ func (t *{{.ServiceStructName}}) GetInputType(method string) (any, error) {
 }
 
 func (t *{{.ServiceStructName}}) GetOutputType(method string) (any, error) {
-	method = strings.ToLower(method)
-	switch method {
-	{{range .Methods}}case "{{.Name}}":
-		{
-			return &{{.OutputType}}{}, nil
-		}
-	{{end}}default:
-		{
-			return nil, errors.New("method not found")
-		}
+	switch strings.ToLower(method) {
+	{{range .Methods}}
+	case "{{.Name}}":
+		{{if .IsOutputPrimitive}}
+		var v {{.OutputType}}
+		return &v, nil
+		{{else}}
+		return &{{.OutputType}}{}, nil
+		{{end}}
+	{{end}}
+	default:
+		return nil, fmt.Errorf("method %q not found", method)
 	}
 }
 
@@ -289,6 +293,50 @@ func validateFunctionParams(fn *ast.FuncDecl) (string, error) {
 	return "", fmt.Errorf("function %s: first parameter must be polycode.ServiceContext or polycode.WorkflowContext", fn.Name.Name)
 }
 
+func extractType(expr ast.Expr) (typeStr string, isPointer bool, isPrimitive bool) {
+	switch t := expr.(type) {
+
+	case *ast.StarExpr:
+		innerType, _, primitive := extractType(t.X)
+		return innerType, true, primitive
+
+	case *ast.SelectorExpr:
+		// Handles pkg.Type
+		if pkgIdent, ok := t.X.(*ast.Ident); ok {
+			typeName := fmt.Sprintf("%s.%s", pkgIdent.Name, t.Sel.Name)
+			return typeName, false, false
+		}
+
+		return t.Sel.Name, false, false
+
+	case *ast.Ident:
+		// Handles builtin and local types
+		return t.Name, false, primitiveTypes[t.Name]
+
+	case *ast.ArrayType:
+		elemType, _, _ := extractType(t.Elt)
+		return "[]" + elemType, false, false
+
+	case *ast.MapType:
+		keyType, _, _ := extractType(t.Key)
+		valType, _, _ := extractType(t.Value)
+		return fmt.Sprintf("map[%s]%s", keyType, valType), false, false
+
+	case *ast.InterfaceType:
+		return "interface{}", false, false
+
+	default:
+		return fmt.Sprintf("%T", t), false, false
+	}
+}
+
+var primitiveTypes = map[string]bool{
+	"string": true, "bool": true, "int": true, "int8": true, "int16": true,
+	"int32": true, "int64": true, "uint": true, "uint8": true, "uint16": true,
+	"uint32": true, "uint64": true, "float32": true, "float64": true,
+	"byte": true, "rune": true, "any": true, "interface{}": true,
+}
+
 // Updated parseDir function to mark methods as workflow or service
 func parseDir(serviceFolder string) ([]MethodInfo, []string, error) {
 	fset := token.NewFileSet()
@@ -330,44 +378,22 @@ func parseDir(serviceFolder string) ([]MethodInfo, []string, error) {
 
 					// Extract the function name and input/output parameters
 					methodName := strings.ToLower(fn.Name.Name) // Normalize to lowercase
-
-					inputType := ""
-					isInputPointer := false
-
-					// Handle pointer types and normal types
-					if starExpr, ok := fn.Type.Params.List[1].Type.(*ast.StarExpr); ok {
-						isInputPointer = true
-						if selectorExpr, ok := starExpr.X.(*ast.SelectorExpr); ok {
-							inputType = fmt.Sprintf("%s.%s", selectorExpr.X.(*ast.Ident).Name, selectorExpr.Sel.Name)
-						}
-					} else if selectorExpr, ok := fn.Type.Params.List[1].Type.(*ast.SelectorExpr); ok {
-						inputType = fmt.Sprintf("%s.%s", selectorExpr.X.(*ast.Ident).Name, selectorExpr.Sel.Name)
-					}
-
-					outputType := ""
-					isOutputPointer := false
-
-					// Handle pointer types and normal types
-					if starExpr, ok := fn.Type.Results.List[0].Type.(*ast.StarExpr); ok {
-						isOutputPointer = true
-						if selectorExpr, ok := starExpr.X.(*ast.SelectorExpr); ok {
-							outputType = fmt.Sprintf("%s.%s", selectorExpr.X.(*ast.Ident).Name, selectorExpr.Sel.Name)
-						}
-					} else if selectorExpr, ok := fn.Type.Results.List[0].Type.(*ast.SelectorExpr); ok {
-						outputType = fmt.Sprintf("%s.%s", selectorExpr.X.(*ast.Ident).Name, selectorExpr.Sel.Name)
-					}
+					inputType, isInputPointer, isInputPrimitive := extractType(fn.Type.Params.List[1].Type)
+					outputType, isOutputPointer, isOutputPrimitive := extractType(fn.Type.Results.List[0].Type)
 
 					// Append the method and its corresponding input type to methods
-					if inputType != "" {
+					if inputType != "" && outputType != "" {
 						methods = append(methods, MethodInfo{
-							OriginalName:    OriginalName,
-							Name:            methodName,
-							InputType:       inputType,
-							IsInputPointer:  isInputPointer,
-							OutputType:      outputType,
-							IsOutputPointer: isOutputPointer,
-							IsWorkflow:      contextType == "Workflow",
-							IsService:       contextType == "Service",
+							OriginalName:      OriginalName,
+							Name:              methodName,
+							InputType:         inputType,
+							IsInputPointer:    isInputPointer,
+							IsInputPrimitive:  isInputPrimitive,
+							OutputType:        outputType,
+							IsOutputPointer:   isOutputPointer,
+							IsOutputPrimitive: isOutputPrimitive,
+							IsWorkflow:        contextType == "Workflow",
+							IsService:         contextType == "Service",
 						})
 					}
 				}
