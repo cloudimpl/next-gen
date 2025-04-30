@@ -18,6 +18,7 @@ import (
 type MethodInfo struct {
 	OriginalName      string
 	Name              string
+	Description       string
 	InputType         string
 	IsInputPointer    bool
 	IsInputPrimitive  bool
@@ -57,6 +58,20 @@ type {{.ServiceStructName}} struct {
 
 func (t *{{.ServiceStructName}}) GetName() string {
 	return "{{.ServiceName}}"
+}
+
+func (t *{{.ServiceStructName}}) GetDescription(method string) (string, error) {
+	method = strings.ToLower(method)
+	switch method {
+	{{range .Methods}}case "{{.Name}}":
+		{
+			return &{{.Description}}{}, nil
+		}
+	{{end}}default:
+		{
+			return nil, errors.New("method not found")
+		}
+	}
 }
 
 func (t *{{.ServiceStructName}}) GetInputType(method string) (any, error) {
