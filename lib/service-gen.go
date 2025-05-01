@@ -170,6 +170,20 @@ func (t *{{.ServiceStructName}}) IsWorkflow(method string)bool {
 }
 `
 
+// extractDescriptionFromComments extracts the @description value from []*ast.Comment.
+func extractDescriptionFromComments(comments []*ast.Comment) string {
+	for _, c := range comments {
+		line := strings.TrimSpace(strings.TrimPrefix(c.Text, "//"))
+		line = strings.TrimSpace(strings.TrimPrefix(line, "/*")) // handle block comment
+		line = strings.TrimSpace(strings.TrimSuffix(line, "*/"))
+
+		if strings.HasPrefix(line, "@description") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "@description"))
+		}
+	}
+	return ""
+}
+
 // GetModuleName reads the go.mod file and extracts the module name
 func getModuleName(filePath string) (string, error) {
 	// Open go.mod file
@@ -393,6 +407,7 @@ func parseDir(serviceFolder string) ([]MethodInfo, []string, error) {
 
 					// Extract the function name and input/output parameters
 					methodName := strings.ToLower(fn.Name.Name) // Normalize to lowercase
+					description := extractDescriptionFromComments(fn.Doc.List)
 					inputType, isInputPointer, isInputPrimitive := extractType(fn.Type.Params.List[1].Type)
 					outputType, isOutputPointer, isOutputPrimitive := extractType(fn.Type.Results.List[0].Type)
 
@@ -401,6 +416,7 @@ func parseDir(serviceFolder string) ([]MethodInfo, []string, error) {
 						methods = append(methods, MethodInfo{
 							OriginalName:      OriginalName,
 							Name:              methodName,
+							Description:       description,
 							InputType:         inputType,
 							IsInputPointer:    isInputPointer,
 							IsInputPrimitive:  isInputPrimitive,
