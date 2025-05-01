@@ -65,11 +65,11 @@ func (t *{{.ServiceStructName}}) GetDescription(method string) (string, error) {
 	switch method {
 	{{range .Methods}}case "{{.Name}}":
 		{
-			return &{{.Description}}{}, nil
+			return "{{.Description}}", nil
 		}
 	{{end}}default:
 		{
-			return nil, errors.New("method not found")
+			return "", errors.New("method not found")
 		}
 	}
 }
@@ -379,7 +379,7 @@ func parseDir(serviceFolder string) ([]MethodInfo, []string, error) {
 		}
 		// Only process Go files that are not test files
 		if strings.HasSuffix(info.Name(), ".go") && !strings.HasSuffix(info.Name(), "_test.go") {
-			node, err := parser.ParseFile(fset, path, nil, parser.AllErrors)
+			node, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
 			if err != nil {
 				return err
 			}
@@ -407,7 +407,13 @@ func parseDir(serviceFolder string) ([]MethodInfo, []string, error) {
 
 					// Extract the function name and input/output parameters
 					methodName := strings.ToLower(fn.Name.Name) // Normalize to lowercase
-					description := extractDescriptionFromComments(fn.Doc.List)
+					var description string
+
+					if fn.Doc == nil || len(fn.Doc.List) == 0 {
+						description = ""
+					} else {
+						description = extractDescriptionFromComments(fn.Doc.List)
+					}
 					inputType, isInputPointer, isInputPrimitive := extractType(fn.Type.Params.List[1].Type)
 					outputType, isOutputPointer, isOutputPrimitive := extractType(fn.Type.Results.List[0].Type)
 
